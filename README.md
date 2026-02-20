@@ -1,7 +1,7 @@
-Телеграмм канал автора: https://t.me/crypto_maniacdt/
+## Структурный фильтр pine script
 
+Автор: https://t.me/crypto_maniacdt/
 Связь: https://t.me/Perpetual_god
-
 Получить курс по алготрейдингу: https://t.me/crypto_maniacdt/428
 
 Индикатор анализирует **структуру рынка** по концепции **Smart Money Concept (SMC)**:  
