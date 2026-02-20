@@ -1,0 +1,341 @@
+//@version=6
+indicator("Smart Money Structure Analyzer", overlay=true, max_labels_count=500)
+
+// ===== INPUTS =====
+swingPeriod = input.int(3, "Swing Period", minval=3, maxval=21)
+showFractals = input.bool(false, "Show Fractals")
+showStructure = input.bool(false, "Show Structure Lines")
+showBOS = input.bool(true, "Show Break of Structure")
+showCHoCH = input.bool(true, "Show Change of Character")
+showMitigation = input.bool(false, "Show Mitigation Levels")
+
+// ===== SWING POINT DETECTION (CORRECT IMPLEMENTATION) =====
+// Swing High: свеча имеет наивысший high в окне, фланкируется lower high с обеих сторон
+swingHigh() =>
+    middle = math.floor(swingPeriod / 2)
+    if bar_index < swingPeriod
+        false
+    else
+        // Центральная свеча - наивысшая в окне
+        isHighest = high[middle] == ta.highest(high, swingPeriod)[middle]
+        // Проверяем lower highs слева
+        leftCondition = true
+        for i = 1 to middle
+            leftCondition := leftCondition and high[middle] > high[middle - i]
+        // Проверяем lower highs справа
+        rightCondition = true
+        for i = 1 to middle
+            rightCondition := rightCondition and high[middle] > high[middle + i]
+        isHighest and leftCondition and rightCondition
+
+// Swing Low: свеча имеет наименьший low в окне, фланкируется higher low с обеих сторон
+swingLow() =>
+    middle = math.floor(swingPeriod / 2)
+    if bar_index < swingPeriod
+        false
+    else
+        // Центральная свеча - наименьшая в окне
+        isLowest = low[middle] == ta.lowest(low, swingPeriod)[middle]
+        // Проверяем higher lows слева
+        leftCondition = true
+        for i = 1 to middle
+            leftCondition := leftCondition and low[middle] < low[middle - i]
+        // Проверяем higher lows справа
+        rightCondition = true
+        for i = 1 to middle
+            rightCondition := rightCondition and low[middle] < low[middle + i]
+        isLowest and leftCondition and rightCondition
+
+// Текущие свинги
+currentSwingHigh = swingHigh()
+currentSwingLow = swingLow()
+
+// ===== SWING STORAGE =====
+// Храним свинги в массивах для анализа структуры
+var float[] swingHighPrices = array.new_float()
+var int[] swingHighBars = array.new_int()
+var float[] swingLowPrices = array.new_float()
+var int[] swingLowBars = array.new_int()
+
+if currentSwingHigh
+    middle = math.floor(swingPeriod / 2)
+    swingPrice = high[middle]
+    swingBar = bar_index - middle
+    
+    // Проверяем, чтобы это был действительно новый свинг (не рядом с предыдущим)
+    shouldAdd = true
+    if array.size(swingHighBars) > 0
+        lastBar = array.get(swingHighBars, 0)
+        if math.abs(swingBar - lastBar) < swingPeriod
+            shouldAdd := false
+    
+    if shouldAdd
+        array.unshift(swingHighPrices, swingPrice)
+        array.unshift(swingHighBars, swingBar)
+
+if currentSwingLow
+    middle = math.floor(swingPeriod / 2)
+    swingPrice = low[middle]
+    swingBar = bar_index - middle
+    
+    // Проверяем, чтобы это был действительно новый свинг
+    shouldAdd = true
+    if array.size(swingLowBars) > 0
+        lastBar = array.get(swingLowBars, 0)
+        if math.abs(swingBar - lastBar) < swingPeriod
+            shouldAdd := false
+    
+    if shouldAdd
+        array.unshift(swingLowPrices, swingPrice)
+        array.unshift(swingLowBars, swingBar)
+
+// Ограничиваем размер массивов
+maxSwings = 20
+if array.size(swingHighPrices) > maxSwings
+    array.pop(swingHighPrices)
+    array.pop(swingHighBars)
+if array.size(swingLowPrices) > maxSwings
+    array.pop(swingLowPrices)
+    array.pop(swingLowBars)
+
+// ===== STRUCTURE ANALYSIS (SMART MONEY LOGIC) =====
+// Определяем последние значимые свинги для анализа
+getLastHigherLow() =>
+    if array.size(swingLowPrices) < 2
+        na
+    else
+        // Ищем последовательные higher lows
+        lastLow = array.get(swingLowPrices, 0)
+        prevLow = array.get(swingLowPrices, 1)
+        lastLow > prevLow ? lastLow : na
+
+getLastLowerHigh() =>
+    if array.size(swingHighPrices) < 2
+        na
+    else
+        // Ищем последовательные lower highs
+        lastHigh = array.get(swingHighPrices, 0)
+        prevHigh = array.get(swingHighPrices, 1)
+        lastHigh < prevHigh ? lastHigh : na
+
+getLastLowerLow() =>
+    if array.size(swingLowPrices) < 2
+        na
+    else
+        // Ищем последовательные lower lows
+        lastLow = array.get(swingLowPrices, 0)
+        prevLow = array.get(swingLowPrices, 1)
+        lastLow < prevLow ? lastLow : na
+
+getLastHigherHigh() =>
+    if array.size(swingHighPrices) < 2
+        na
+    else
+        // Ищем последовательные higher highs
+        lastHigh = array.get(swingHighPrices, 0)
+        prevHigh = array.get(swingHighPrices, 1)
+        lastHigh > prevHigh ? lastHigh : na
+
+// Ключевые уровни для анализа структуры
+lastHL = getLastHigherLow()  // Последний Higher Low (важен для восходящей структуры)
+lastLH = getLastLowerHigh()  // Последний Lower High (важен для нисходящей структуры)
+lastLL = getLastLowerLow()   // Последний Lower Low
+lastHH = getLastHigherHigh() // Последний Higher High
+
+// ===== STRUCTURE STATE DETECTION =====
+// Определяем текущее состояние структуры
+getStructureState() =>
+    // Проверяем наличие необходимых свингов
+    hasEnoughData = array.size(swingHighPrices) >= 2 and array.size(swingLowPrices) >= 2
+    
+    if not hasEnoughData
+        "INSUFFICIENT_DATA"
+    else
+        // Анализируем последние свинги
+        hhExists = not na(lastHH)
+        llExists = not na(lastLL)
+        hlExists = not na(lastHL)
+        lhExists = not na(lastLH)
+        
+        // Определяем структуру
+        if hhExists and hlExists
+            "UPTREND"  // Higher Highs и Higher Lows
+        else if llExists and lhExists
+            "DOWNTREND" // Lower Lows и Lower Highs
+        else if (hhExists and llExists) or (hlExists and lhExists)
+            "CONSOLIDATION" // Смешанная структура
+        else
+            "UNDEFINED"
+
+currentStructure = getStructureState()
+
+// ===== BREAK OF STRUCTURE (BOS) DETECTION =====
+// BOS вниз: цена закрывается ниже последнего Higher Low
+bosDown() =>
+    if not na(lastHL)
+        // Медвежья свеча закрывается ниже HL
+        isBearish = close < open
+        closeBelowHL = close < lastHL and low < lastHL
+        isBearish and closeBelowHL
+    else
+        false
+
+// BOS вверх: цена закрывается выше последнего Lower High
+bosUp() =>
+    if not na(lastLH)
+        // Бычья свеча закрывается выше LH
+        isBullish = close > open
+        closeAboveLH = close > lastLH and high > lastLH
+        isBullish and closeAboveLH
+    else
+        false
+
+// Определяем BOS
+hasBOSDown = bosDown()
+hasBOSUp = bosUp()
+
+// ===== CHANGE OF CHARACTER (CHoCH) DETECTION =====
+// CHoCH: после BOS цена формирует противоположную структуру
+chochDown() =>
+    if hasBOSDown and currentStructure == "UPTREND"
+        // После медвежьего BOS ожидаем формирование Lower Low
+        not na(lastLL)
+    else
+        false
+
+chochUp() =>
+    if hasBOSUp and currentStructure == "DOWNTREND"
+        // После бычьего BOS ожидаем формирование Higher High
+        not na(lastHH)
+    else
+        false
+
+hasCHoCHDown = chochDown()
+hasCHoCHUp = chochUp()
+
+// ===== MITIGATION LEVELS =====
+// Уровни митигации (возврата цены)
+getMitigationLevel() =>
+    if hasBOSDown and not na(lastHL)
+        // Для медвежьего BOS - уровень выше последнего HL
+        lastHL * 1.002  // +0.2%
+    else if hasBOSUp and not na(lastLH)
+        // Для бычьего BOS - уровень ниже последнего LH
+        lastLH * 0.998  // -0.2%
+    else
+        na
+
+mitigationLevel = getMitigationLevel()
+
+// ===== VISUALIZATION =====
+// 1. Swing Points (свинги)
+swingHighToShow = showFractals and currentSwingHigh
+swingLowToShow = showFractals and currentSwingLow
+
+plotshape(swingHighToShow, "Swing High", shape.xcross, 
+     location.abovebar, color=color.new(color.red, 0), size=size.small, 
+     offset = -math.floor(swingPeriod / 2))
+plotshape(swingLowToShow, "Swing Low", shape.xcross, 
+     location.belowbar, color=color.new(color.green, 0), size=size.tiny, 
+     offset = -math.floor(swingPeriod / 2))
+
+// 2. Structure Levels (уровни структуры)
+var line lastHLLine = na
+var line lastLHLine = na
+
+if showStructure
+    // Линия последнего Higher Low
+    if not na(lastHL)
+        if na(lastHLLine)
+            lastHLLine := line.new(bar_index - 50, lastHL, bar_index, lastHL,
+                 color=color.new(color.blue, 70), width=1, style=line.style_dashed)
+        else
+            line.set_xy1(lastHLLine, bar_index - 50, lastHL)
+            line.set_xy2(lastHLLine, bar_index, lastHL)
+    else if not na(lastHLLine)
+        line.delete(lastHLLine)
+        lastHLLine := na
+    
+    // Линия последнего Lower High
+    if not na(lastLH)
+        if na(lastLHLine)
+            lastLHLine := line.new(bar_index - 50, lastLH, bar_index, lastLH,
+                 color=color.new(color.purple, 70), width=1, style=line.style_dashed)
+        else
+            line.set_xy1(lastLHLine, bar_index - 50, lastLH)
+            line.set_xy2(lastLHLine, bar_index, lastLH)
+    else if not na(lastLHLine)
+        line.delete(lastLHLine)
+        lastLHLine := na
+
+// 3. Break of Structure (BOS) сигналы
+bosDownToShow = showBOS and hasBOSDown
+bosUpToShow = showBOS and hasBOSUp
+
+plotshape(bosDownToShow, "BOS Down", shape.triangledown, location.abovebar, 
+     color=color.new(color.red, 0), size=size.tiny)
+plotshape(bosUpToShow, "BOS Up", shape.triangleup, location.belowbar, 
+     color=color.new(color.green, 0), size=size.tiny)
+
+// 4. Change of Character (CHoCH) сигналы
+chochDownToShow = showCHoCH and hasCHoCHDown
+chochUpToShow = showCHoCH and hasCHoCHUp
+
+plotshape(chochDownToShow, "CHoCH Down", shape.circle, location.abovebar,
+     color=color.new(color.red, 0), size=size.normal)
+plotshape(chochUpToShow, "CHoCH Up", shape.circle, location.belowbar,
+     color=color.new(color.green, 0), size=size.normal)
+
+// 5. Mitigation Levels (уровни митигации)
+var line mitigationLine = na
+if showMitigation and not na(mitigationLevel)
+    if na(mitigationLine)
+        mitigationLine := line.new(bar_index - 30, mitigationLevel, bar_index, mitigationLevel,
+             color=color.new(color.orange, 50), width=2, style=line.style_dotted)
+    else
+        line.set_xy1(mitigationLine, bar_index - 30, mitigationLevel)
+        line.set_xy2(mitigationLine, bar_index, mitigationLevel)
+else if not na(mitigationLine)
+    line.delete(mitigationLine)
+    mitigationLine := na
+
+// ===== INFO LABELS =====
+if barstate.islast
+    // Информационная метка
+    infoText = ""
+    infoText := infoText + "Structure: " + currentStructure + "\n"
+    
+    if not na(lastHL)
+        infoText := infoText + "Last HL: " + str.tostring(lastHL, "#.##") + "\n"
+    if not na(lastLH)
+        infoText := infoText + "Last LH: " + str.tostring(lastLH, "#.##") + "\n"
+    
+    if hasBOSDown
+        infoText := infoText + "BOS DOWN ✓\n"
+    if hasBOSUp
+        infoText := infoText + "BOS UP ✓\n"
+    if hasCHoCHDown
+        infoText := infoText + "CHoCH DOWN ✓\n"
+    if hasCHoCHUp
+        infoText := infoText + "CHoCH UP ✓\n"
+    
+    // Определяем цвет метки в зависимости от структуры
+    labelColor = switch currentStructure
+        "UPTREND" => color.green
+        "DOWNTREND" => color.red
+        "CONSOLIDATION" => color.blue
+        => color.gray
+    
+    label.new(bar_index, high, infoText, color=labelColor, 
+         textcolor=color.white, style=label.style_label_down, 
+         size=size.small, xloc=xloc.bar_index, yloc=yloc.price)
+
+// ===== ALERTS =====
+if hasBOSDown
+    alert("BOS DOWN detected at " + str.tostring(close), alert.freq_once_per_bar_close)
+if hasBOSUp
+    alert("BOS UP detected at " + str.tostring(close), alert.freq_once_per_bar_close)
+if hasCHoCHDown
+    alert("CHoCH DOWN detected - Structure changed!", alert.freq_once_per_bar_close)
+if hasCHoCHUp
+    alert("CHoCH UP detected - Structure changed!", alert.freq_once_per_bar_close)
